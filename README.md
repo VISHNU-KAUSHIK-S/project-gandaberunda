@@ -3,5 +3,5 @@ This is a drone project that my friend and I will be implementing to learn about
 
 
 ## Developers
-- Vikas DK
 - Vishnu Kaushik S
+- Vikas DK
