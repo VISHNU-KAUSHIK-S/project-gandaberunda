@@ -1,1101 +1,691 @@
 # Project Gandaberunda — V1 System Architecture
 
-> **Purpose:** Define the overall architecture of the Gandaberunda V1 drone before detailed hardware and software implementation.
+> **Purpose:** Define the overall structure of Gandaberunda V1 and how its major subsystems communicate.
 
 ---
 
-# 1. Document Purpose
+## 1. V1 Goal
 
-This document defines the high-level architecture of Gandaberunda V1.
-
-It describes:
-
-- Major subsystems
-- Responsibilities of each subsystem
-- Communication paths
-- Control flow
-- Safety architecture
-- Flight modes
-- Upgrade boundaries
-- System-level design decisions
-
-This document acts as the high-level reference for V1 development.
-
-Detailed implementation information will be maintained separately in the `docs/` directory.
-
----
-
-# 2. V1 Objective
-
-The primary objective of V1 is to build a reliable and understandable drone platform capable of:
+Gandaberunda V1 is a modular drone platform designed to achieve:
 
 - Stable manual flight
-- Basic hovering
-- Custom controller input
-- Sensor-based stabilization
-- Communication-loss handling
-- Safe arming and disarming
-- Emergency shutdown
-- Controlled autonomous behaviour
-- Basic system diagnostics
-- Future expansion without major redesign
+- Stable hovering
+- Custom controller operation
+- Reliable communication
+- Basic safety and failsafe behaviour
+- A hardware/software architecture that can be upgraded later
 
-V1 prioritizes:
+**Priority:**
 
-1. Safety
-2. Reliability
-3. Understanding
-4. Stability
-5. Debuggability
-6. Modularity
-7. Upgradeability
-8. Cost efficiency
+> Safety → Reliability → Understanding → Flight → Features → Upgrades
 
-Advanced features will only be introduced after reliable basic flight has been achieved.
+Advanced features will only be added after basic flight is reliable.
 
 ---
 
-# 3. High-Level System
-
-The V1 system consists of five major layers:
+## 2. High-Level Architecture
 
 ```text
-+------------------------------------------------------+
-|                  HUMAN / CONTROLLER                  |
-|                                                      |
-|        Custom Controller + Controls + OLED           |
-+---------------------------+--------------------------+
-                            |
-                            | ESP-NOW
-                            v
-+------------------------------------------------------+
-|                    COMMUNICATION                     |
-|                                                      |
-|                  ESP32 Receiver                     |
-+---------------------------+--------------------------+
-                            |
-                            | UART
-                            | (SPI may be evaluated later)
-                            v
-+------------------------------------------------------+
-|                  FLIGHT CONTROLLER                   |
-|                                                      |
-|                      STM32                           |
-|                                                      |
-|  Sensor Processing → State Estimation → Control     |
-|                    → Motor Mixing                    |
-+---------------------------+--------------------------+
-                            |
-                            | PWM initially
-                            | DShot future upgrade
-                            v
-+------------------------------------------------------+
-|                    ACTUATION                         |
-|                                                      |
-|             ESCs → Brushless Motors                 |
-+------------------------------------------------------+
-
-                    SENSOR INPUTS
-                         |
-          +--------------+--------------+
-          |              |              |
-          v              v              v
-         IMU            ToF          Optional GPS
+                    CUSTOM CONTROLLER
+                   ┌──────────────────┐
+                   │      ESP32       │
+                   │                  │
+                   │ Joysticks        │
+                   │ Switches         │
+                   │ ARM / DISARM     │
+                   │ OLED             │
+                   └────────┬─────────┘
+                            │
+                         ESP-NOW
+                            │
+                            ▼
+                   ┌──────────────────┐
+                   │   ESP32 RECEIVER │
+                   │                  │
+                   │ Packet Validation│
+                   │ Communication    │
+                   └────────┬─────────┘
+                            │
+                         UART
+                     (SPI later)
+                            │
+                            ▼
+                 ┌──────────────────────┐
+                 │   STM32 FLIGHT       │
+                 │     CONTROLLER       │
+                 │                      │
+                 │ Sensors              │
+                 │ State Estimation     │
+                 │ Flight Modes         │
+                 │ PID Control          │
+                 │ Motor Mixing         │
+                 │ Safety / Failsafe    │
+                 └──────────┬───────────┘
+                            │
+                         PWM V1
+                      DShot later
+                            │
+                            ▼
+                    ┌──────────────┐
+                    │     ESCs     │
+                    └──────┬───────┘
+                           │
+                           ▼
+                       MOTORS
 ```
-
-The architecture is designed so that communication, flight control, sensing, and actuation remain separate subsystems.
 
 ---
 
-# 4. Main Components
+## 3. Main Subsystems
 
-## 4.1 Flight Controller — STM32
+Gandaberunda V1 is divided into five main subsystems:
 
-The STM32 is the primary flight-control processor.
+### 3.1 Controller
 
-Its responsibilities include:
+The controller is responsible for:
 
-- Reading the IMU
-- Reading other flight sensors
+- Reading pilot inputs
+- Sending commands
+- Selecting flight modes
+- ARM / DISARM
+- Emergency control
+- Displaying basic system information
+
+The controller uses an ESP32.
+
+---
+
+### 3.2 Communication
+
+The communication system connects the controller to the drone.
+
+```text
+Controller ESP32
+       │
+       │ ESP-NOW
+       ▼
+Drone ESP32
+       │
+       │ UART
+       ▼
+STM32
+```
+
+V1 uses:
+
+**ESP32 → ESP-NOW → ESP32 → UART → STM32**
+
+SPI may be evaluated later if testing shows a meaningful improvement.
+
+The communication system is responsible for transporting commands.
+
+It is **not responsible for flight control**.
+
+---
+
+### 3.3 Flight Controller
+
+The STM32 is the core flight-control computer.
+
+It is responsible for:
+
+- Reading sensors
 - Sensor calibration
 - Sensor validation
 - State estimation
-- Flight-mode management
+- Flight modes
 - Stabilization
 - PID control
 - Motor mixing
-- ESC command generation
-- Arming/disarming logic
-- Failsafe handling
-- Battery monitoring
-- Landing control
-- System diagnostics
-- Watchdog handling
+- Motor commands
+- Arming/disarming
+- Failsafe behaviour
 
-The STM32 is the final authority for flight safety.
-
-The communication processor must not directly control the motors.
+The STM32 is the final authority over motor operation.
 
 ---
 
-## 4.2 Controller — ESP32
+### 3.4 Sensors
 
-The custom controller will initially use an ESP32 as the transmitter processor.
+The flight controller receives information from sensors such as:
 
-Its responsibilities include:
+- IMU
+- ToF sensor
+- GPS
+- Optional magnetometer
 
-- Reading control inputs
-- Reading mode switches
-- Reading ARM / DISARM input
-- Reading emergency-kill input
-- Creating control packets
-- Transmitting packets using ESP-NOW
-- Displaying system information on the OLED
-- Providing operator feedback
+The IMU is the primary sensor for stabilization.
 
-The controller does not directly control the motors.
+Other sensors are added only when their information is required.
+
+Basic stabilization must not depend on optional sensors.
 
 ---
 
-## 4.3 Receiver — ESP32
+### 3.5 Propulsion
 
-A second ESP32 will act as the receiver on the drone.
-
-Its responsibilities include:
-
-- Receiving ESP-NOW packets
-- Validating received packets
-- Checking packet timing
-- Checking packet sequence information
-- Forwarding valid commands to the STM32
-
-The receiver acts as a communication bridge between the controller and flight controller.
-
----
-
-## 4.4 ESCs and Motors
-
-The STM32 generates motor-control commands.
-
-These commands are sent to the ESCs.
-
-The ESCs control the brushless motors.
+The propulsion system consists of:
 
 ```text
 STM32
-  |
-  | Motor command
-  v
-ESC
-  |
-  | Electrical power switching
-  v
-Brushless Motor
+   │
+   ▼
+ ESCs
+   │
+   ▼
+Motors
+   │
+   ▼
+Propellers
 ```
 
-V1 will initially use PWM-based ESC control.
+V1 initially uses PWM-based ESC control.
 
-DShot may be introduced as a later upgrade.
+DShot may be introduced later.
 
 ---
 
-# 5. Controller Architecture
+## 4. Flight-Control Flow
 
-The custom controller contains:
-
-- ESP32 transmitter
-- Control inputs
-- ARM / DISARM switch
-- Manual / Autonomous mode switch
-- Emergency-kill control
-- OLED display
-- Other required operator controls
-
-The communication path is:
+The basic flight-control pipeline is:
 
 ```text
-Custom Controller
-       |
-       | ESP-NOW
-       v
-ESP32 Receiver
-       |
-       | UART
-       v
-STM32 Flight Controller
-```
-
-The controller provides commands and operator feedback, while the STM32 remains responsible for deciding whether those commands are safe to execute.
-
----
-
-# 6. Communication Architecture
-
-The initial communication path is:
-
-```text
-Controller
-    |
-    | ESP-NOW
-    v
-ESP32 RX
-    |
-    | UART
-    v
-STM32 Flight Controller
-```
-
-The communication system is designed for low-latency control input.
-
-Packets will be validated before being accepted by the flight controller.
-
-Validation will include:
-
-- Packet identity
-- Packet timing
-- Sequence information
-- Data integrity checking
-- Command range validation
-
-The exact packet format will be documented separately in:
-
-`docs/communication/communication-architecture.md`
-
----
-
-# 7. UART and Future SPI Evaluation
-
-V1 will initially use:
-
-```text
-ESP32 RX → UART → STM32
-```
-
-UART is selected initially because it is:
-
-- Simple
-- Easy to debug
-- Widely supported
-- Sufficient for the initial architecture
-
-SPI may later be evaluated between the ESP32 receiver and STM32.
-
-The comparison will consider:
-
-- Latency
-- Reliability
-- Implementation complexity
-- CPU overhead
-- Debugging difficulty
-- Throughput
-
-The communication interface can therefore be upgraded without changing the overall system architecture.
-
----
-
-# 8. Flight Control Architecture
-
-The STM32 flight-control pipeline is:
-
-```text
-Sensor Input
-     |
-     v
-Sensor Calibration
-     |
-     v
-Sensor Validation
-     |
-     v
+Sensors
+   │
+   ▼
+Sensor Processing
+   │
+   ▼
 State Estimation
-     |
-     v
-Flight Mode Manager
-     |
-     v
-Flight Controller
-     |
-     v
-PID Control
-     |
-     v
-Motor Mixing
-     |
-     v
+   │
+   ▼
+Flight Mode
+   │
+   ▼
+PID Controller
+   │
+   ▼
+Motor Mixer
+   │
+   ▼
 ESC Output
-     |
-     v
+   │
+   ▼
 Motors
 ```
 
-The system will first achieve basic stabilization before additional autonomous functions are enabled.
+The controller provides desired pilot commands.
 
-The control architecture is intentionally layered so that future autonomous systems can generate desired flight commands without directly controlling the motors.
-
----
-
-# 9. IMU
-
-The IMU is the primary sensor for attitude stabilization.
-
-It provides measurements used to determine the drone's motion and orientation.
-
-The flight controller will use:
-
-- Gyroscope data
-- Accelerometer data
-
-for stabilization.
-
-Sensor calibration is required before reliable flight.
-
-The system must validate sensor data before using it for flight control.
+The STM32 converts those commands into safe motor outputs.
 
 ---
 
-# 10. Magnetometer
+## 5. Control Authority
 
-A magnetometer may be used for heading-related functions where appropriate.
+The architecture follows one important rule:
 
-However, magnetic interference from:
+> **The STM32 always has final control authority over the motors.**
 
-- Motors
-- ESCs
-- High-current wiring
-- Battery wiring
-
-must be considered.
-
-Therefore, magnetometer use will not be treated as a fundamental requirement for basic V1 stabilization.
-
-Basic flight must remain possible without depending on the magnetometer.
-
-If a magnetometer is used, its placement and calibration will be evaluated experimentally.
-
----
-
-# 11. Downward ToF Sensor
-
-A downward-facing Time-of-Flight (ToF) sensor may be used for:
-
-- Ground-distance measurement
-- Low-altitude awareness
-- Controlled landing
-- Landing verification
-
-The ToF sensor is particularly useful for low-altitude behaviour.
-
-The system must validate ToF readings before using them for automatic decisions.
-
-ToF is not required for the fundamental attitude-stabilization loop.
-
----
-
-# 12. GPS
-
-GPS may be included as an optional V1 component.
-
-GPS is not required for:
-
-- Basic stabilization
-- Manual flight
-- Basic hovering
-- Fundamental attitude control
-
-GPS may later support:
-
-- Outdoor positioning
-- Position-related features
-- Return-to-home
-- Autonomous navigation
-
-The architecture must remain functional when GPS is unavailable.
-
----
-
-# 13. OLED Diagnostics
-
-A 0.96-inch OLED will provide basic system feedback.
-
-Possible information includes:
-
-- Communication status
-- Flight mode
-- Arm state
-- Battery status
-- Sensor status
-- GPS status
-- System state
-- Failsafe state
-- Fault information
-- Startup status
-
-Example:
+The ESP32 receiver cannot directly control the motors.
 
 ```text
-+----------------------+
-|    GANDABERUNDA      |
-|----------------------|
-| LINK : OK            |
-| MODE : MANUAL        |
-| ARM  : OFF           |
-| BAT  : NORMAL        |
-| IMU  : OK            |
-| GPS  : OK            |
-| SYS  : READY         |
-+----------------------+
+Controller
+    │
+    ▼
+Communication
+    │
+    ▼
+STM32
+    │
+    ├── Accept command
+    ├── Reject invalid command
+    ├── Apply failsafe
+    └── Generate motor output
+             │
+             ▼
+           Motors
 ```
 
-The OLED is primarily a diagnostic and operator-feedback interface.
+This keeps communication and flight control separate.
 
 ---
 
-# 14. Flight Modes
+## 6. Flight Modes
 
-V1 will initially support two primary control modes:
+V1 will initially support:
+
+### Manual
+
+The pilot provides the desired flight commands through the custom controller.
 
 ```text
-+----------------------+
-| MANUAL               |
-|                      |
-| Controller commands  |
-| provide the desired  |
-| pilot input.         |
-+----------------------+
-
-+----------------------+
-| AUTONOMOUS           |
-|                      |
-| The flight controller|
-| executes predefined  |
-| automatic behaviour. |
-+----------------------+
+Pilot
+  │
+  ▼
+Controller
+  │
+  ▼
+Communication
+  │
+  ▼
+STM32
+  │
+  ▼
+Flight Control
 ```
 
-A physical switch on the controller will select the operating mode.
+### Autonomous
 
-The exact autonomous functions will be introduced only after reliable manual flight has been achieved.
+The STM32 uses predefined control logic to generate desired behaviour.
 
----
+```text
+Autonomous Logic
+       │
+       ▼
+Flight Controller
+       │
+       ▼
+PID
+       │
+       ▼
+Motors
+```
 
-# 15. Manual / Autonomous Mode Switching
-
-The mode-selection switch determines whether the system receives its desired flight behaviour from:
-
-- Manual controller input
-- Autonomous control logic
-
-The drone must not abruptly change control behaviour during a mode transition.
-
-When the mode is changed, the system will enter a short controlled transition state.
-
-During this transition:
-
-- The current state is stabilized
-- The new control source is prepared
-- Sudden control discontinuities are avoided
-
-The exact transition duration will be determined experimentally.
+Autonomous functionality will be introduced only after reliable manual flight.
 
 ---
 
-# 16. Arming System
+## 7. Arming
 
-The drone will use a dedicated ARM / DISARM control.
-
-Arming is the deliberate action that permits the flight controller to enable motor operation.
-
-Disarming prevents motor operation.
-
-The system must not automatically arm after:
+The drone must never automatically arm after:
 
 - Power-up
 - Reset
 - Communication recovery
 - Flight-controller reboot
 
-Normal startup requires deliberate operator action.
+Normal operation follows:
+
+```text
+Power On
+   │
+   ▼
+System Check
+   │
+   ▼
+DISARMED
+   │
+   ▼
+Operator ARM
+   │
+   ▼
+ARMED
+```
+
+The system must verify required conditions before allowing motor operation.
 
 ---
 
-# 17. Startup Behaviour
+## 8. Communication Safety
 
-When the drone powers on:
+Every received command should be checked before being used.
+
+Important checks include:
+
+- Packet validity
+- Packet timing
+- Sequence information
+- Command range
+- Communication state
+
+If valid communication is lost, the STM32 enters the appropriate failsafe behaviour.
+
+The exact timeout values will be determined during testing.
+
+---
+
+## 9. Failsafe
+
+The STM32 continuously monitors important system conditions.
+
+```text
+Communication
+Sensor Status
+Battery
+Flight State
+System Status
+      │
+      ▼
+Safety / Failsafe Logic
+      │
+      ▼
+Appropriate Response
+```
+
+Possible responses include:
+
+- Continue flight
+- Stabilize
+- Hold temporarily
+- Controlled landing
+- Disarm
+
+The exact response depends on the failure and current flight state.
+
+---
+
+## 10. Startup
+
+Normal startup follows:
 
 ```text
 POWER ON
-   |
-   v
-SYSTEM INITIALIZATION
-   |
-   v
-SENSOR INITIALIZATION
-   |
-   v
-CALIBRATION / VALIDATION
-   |
-   v
-SYSTEM CHECK
-   |
-   v
-DISPLAY STATUS
-   |
-   v
-DISARMED
-   |
-   v
-WAIT FOR OPERATOR ARM COMMAND
+   │
+   ▼
+Initialize Hardware
+   │
+   ▼
+Initialize Sensors
+   │
+   ▼
+Calibration / Validation
+   │
+   ▼
+System Checks
+   │
+   ▼
+DISARMED / READY
 ```
 
-The OLED will provide visual feedback during startup.
-
-An audio indicator may also be used where practical.
-
-The drone should clearly indicate when it is:
-
-- Starting
-- Initializing
-- Ready
-- Armed
-- Disarmed
-- In a fault state
+The system should clearly communicate its current state to the operator.
 
 ---
 
-# 18. Reset / Reboot During Flight
+## 11. Reset During Flight
 
-A flight-controller reset during flight must not be treated exactly like a normal ground startup.
+A flight-controller reset is treated differently from normal startup.
 
-The system should prioritize:
+After recovery, the system should:
 
-1. Fast recovery
-2. Re-establishing valid control information
-3. Maintaining stabilization where possible
-4. Avoiding unnecessary delays
-5. Preventing accidental re-arming
+1. Reinitialize required hardware
+2. Re-establish valid communication
+3. Validate incoming commands
+4. Restore safe control behaviour
+5. Prevent unintended re-arming
 
-After reboot, the system will evaluate available controller communication using:
-
-- Packet identity
-- Packet timing
-- Sequence information
-- Command validity
-
-A reboot must never result in unintended motor activation.
-
-The detailed recovery strategy will be implemented and tested separately.
+The exact recovery strategy will be developed and tested separately.
 
 ---
 
-# 19. Failsafe Philosophy
+## 12. Hardware Upgrade Boundaries
 
-Gandaberunda V1 will use a multi-condition failsafe architecture.
+The architecture is designed so that major subsystems can be upgraded independently.
 
-The flight controller continuously evaluates important system conditions rather than relying on a single failure flag.
-
-Important conditions include:
-
-- Communication state
-- Packet freshness
-- Battery state
-- Sensor validity
-- Flight mode
-- Controller state
-- Landing sensor state
-- System faults
-
-The final response is determined from the combined system state.
-
-The exact thresholds will be determined through testing.
-
----
-
-# 20. Communication Loss
-
-If communication is disrupted:
+Examples:
 
 ```text
-VALID COMMANDS
-      |
-      v
-COMMUNICATION LOST
-      |
-      v
-SHORT TOLERANCE PERIOD
-      |
-      v
-STABILIZE / HOLD
-      |
-      v
-CHECK COMMUNICATION
-      |
-      +--------------------+
-      |                    |
- SIGNAL RETURNS        SIGNAL STILL LOST
-      |                    |
-      v                    v
-RESUME CONTROL       CONTROLLED RESPONSE
+UART
+  ↓
+SPI
+
+PWM
+  ↓
+DShot
+
+Basic Sensors
+  ↓
+Additional Sensors
+
+Basic Flight Control
+  ↓
+Advanced Autonomous Control
 ```
 
-The exact timeout and response will depend on the flight state and will be determined during testing.
+Future payloads such as:
 
-The system should avoid both:
+- Night vision
+- Thermal sensing
+- Additional sensing systems
+- Companion computing
 
-- Immediate unnecessary intervention
-- Excessive waiting without valid commands
-
-The goal is predictable behaviour during temporary communication interruptions.
-
----
-
-# 21. Battery Condition
-
-Battery monitoring will be available in V1.
-
-Battery condition can participate in the failsafe decision system.
-
-However, advanced battery optimization is intentionally outside the primary V1 scope.
-
-The immediate V1 objective is safe and predictable operation rather than maximum flight endurance.
-
-Battery-related thresholds will be experimentally validated before being used as automatic triggers.
+should be integrated without requiring a complete redesign of V1.
 
 ---
 
-# 22. Abnormal Motor Behaviour
+## 13. Software Architecture
 
-Motor behaviour will be monitored as part of the safety architecture where practical.
-
-If abnormal motor behaviour is detected, the system should prioritize:
-
-1. Maintaining controllability
-2. Stabilization
-3. Entering an appropriate failsafe state
-4. Controlled landing or shutdown when necessary
-
-The exact detection strategy will be developed after the basic flight-control system is functional.
-
-Motor fault detection is not required before the first basic stabilization tests.
-
----
-
-# 23. Emergency Kill
-
-A separate emergency-kill control will exist independently from normal ARM / DISARM control.
-
-Purpose:
-
-> Provide the operator with a direct emergency shutdown mechanism.
-
-The emergency-kill mechanism is intended for situations where continued motor operation presents an immediate safety risk.
-
-Because immediate motor shutdown during flight can itself result in a crash, the emergency-kill function must be carefully tested and clearly documented.
-
-The emergency-kill control must not be accidentally triggered by normal control inputs.
-
----
-
-# 24. Motor Control
-
-V1 will initially use PWM-based ESC control.
-
-```text
-STM32
-  |
-  | PWM
-  v
-ESC
-  |
-  v
-Brushless Motor
-```
-
-DShot will be evaluated later as an upgrade.
-
-Initial priority:
-
-- Understand PWM
-- Understand ESC operation
-- Verify motor control
-- Verify motor direction
-- Verify motor mixing
-- Establish reliable output
-- Achieve stable flight
-
-Only after PWM-based control is reliable will DShot be introduced.
-
----
-
-# 25. Motor Mixing
-
-The flight controller converts desired:
-
-- Throttle
-- Roll
-- Pitch
-- Yaw
-
-commands into individual motor outputs.
+The firmware should remain modular.
 
 Conceptually:
 
 ```text
-Desired Flight Commands
-          |
-          v
-+----------------------+
-|   Flight Controller  |
-+----------------------+
-          |
-          v
-     Motor Mixer
-          |
-     +----+----+----+
-     |    |    |    |
-     v    v    v    v
-    M1   M2   M3   M4
+Application
+    │
+    ▼
+Flight Modes
+    │
+    ▼
+Flight Control
+    │
+    ▼
+Control Algorithms
+    │
+    ▼
+Hardware Interfaces
+    │
+    ▼
+Drivers
+    │
+    ▼
+Hardware
 ```
 
-The exact motor-mixing matrix will be documented separately.
+Communication, sensors, control algorithms, safety logic, and hardware drivers should remain separate modules.
 
 ---
 
-# 26. Control Hierarchy
+## 14. Development Strategy
 
-The V1 control system will follow a layered structure:
+Development will proceed in this order:
 
 ```text
-Operator Commands
-        |
-        v
-Flight Mode Manager
-        |
-        v
-Desired Attitude / Throttle
-        |
-        v
-Attitude Controller
-        |
-        v
-PID Controllers
-        |
-        v
-Motor Mixer
-        |
-        v
-ESC Outputs
-```
-
-This structure allows future autonomous systems to generate desired flight commands without directly controlling motors.
-
----
-
-# 27. Safety Priority
-
-The system follows this conceptual priority:
-
-```text
-EMERGENCY SAFETY
-       |
-       v
-FAILSAFE
-       |
-       v
-STABILIZATION
-       |
-       v
-FLIGHT MODE
-       |
-       v
-CONTROL COMMAND
-       |
-       v
-MOTOR OUTPUT
-```
-
-Safety-related decisions take precedence over normal user commands when necessary.
-
-The flight controller remains the final authority over motor operation.
-
----
-
-# 28. V1 Development Sequence
-
-The system will not be developed as one large integration task.
-
-Development will progress through:
-
-```text
-1. Learn fundamentals
-        |
-        v
-2. Define requirements
-        |
-        v
-3. Architecture
-        |
-        v
-4. Component selection
-        |
-        v
-5. Individual hardware testing
-        |
-        v
-6. Sensor bring-up
-        |
-        v
-7. Communication testing
-        |
-        v
-8. ESC / motor testing
-        |
-        v
-9. Flight-controller firmware
-        |
-        v
-10. Calibration
-        |
-        v
-11. Stabilization
-        |
-        v
-12. Basic manual flight
-        |
-        v
-13. Stable hover
-        |
-        v
-14. Safety-system validation
-        |
-        v
-15. Additional V1 features
-        |
-        v
-16. Reliability testing
-        |
-        v
-17. V1 release
-```
-
-Advanced features will not be added before basic flight is reliable.
-
----
-
-# 29. Feature Integration Strategy
-
-Gandaberunda V1 will follow a layered integration strategy.
-
-The first milestone is:
-
-```text
-Stable Basic Flight
-```
-
-Only after this is achieved will additional features be introduced.
-
-The general sequence is:
-
-```text
-Basic Flight
-     |
-     v
-Stable Hover
-     |
-     v
-Communication Reliability
-     |
-     v
-Safety Features
-     |
-     v
-OLED Diagnostics
-     |
-     v
-Autonomous Behaviour
-     |
-     v
-Additional Sensors
-```
-
-This prevents advanced features from making basic flight debugging unnecessarily difficult.
-
----
-
-# 30. Upgrade Strategy
-
-The V1 architecture is intentionally modular.
-
-Future upgrades should be possible without replacing the complete system.
-
-Potential upgrade areas include:
-
-- DShot
-- SPI communication
-- RTOS
-- Improved positioning
-- Thermal camera
-- Night vision
-- Additional sensors
-- Companion computer
-- Computer vision
-- Autonomous navigation
-- Additional sensing payloads
-
-The V1 architecture should provide suitable interfaces for future additions wherever practical.
-
----
-
-# 31. RTOS Strategy
-
-An RTOS is not part of the initial V1 firmware architecture.
-
-The first version will use a simpler firmware structure so that both developers can understand:
-
-- Timing
-- Interrupts
-- Drivers
-- Sensor acquisition
-- Control loops
-- Communication
-- State machines
-
-Once the basic platform is reliable, an RTOS can be introduced as a separate engineering upgrade.
-
-The RTOS migration should not be allowed to complicate the initial flight-control development unnecessarily.
-
----
-
-# 32. Modularity Principle
-
-Subsystems should communicate through clearly defined interfaces.
-
-For example:
-
-```text
-Communication
-      |
-      v
-Command Interface
-      |
-      v
+Learn
+  ↓
+Requirements
+  ↓
+Architecture
+  ↓
+Hardware Selection
+  ↓
+Individual Hardware Testing
+  ↓
+Sensor Bring-up
+  ↓
+Communication Testing
+  ↓
+Motor / ESC Testing
+  ↓
 Flight Controller
-      |
-      v
-Motor Interface
+  ↓
+Calibration
+  ↓
+Stabilization
+  ↓
+Basic Flight
+  ↓
+Stable Hover
+  ↓
+Safety Validation
+  ↓
+Additional Features
 ```
 
-This allows individual components to be replaced without redesigning the entire system.
+Features will not be added simply for the sake of adding features.
 
-Examples include:
+---
+
+## 15. Team Knowledge Principle
+
+Both developers must understand the complete system.
+
+Responsibilities may be divided during implementation, but knowledge must not be permanently divided.
+
+Both developers should understand:
+
+- Hardware
+- Firmware
+- Communication
+- Flight control
+- Sensors
+- Safety
+- Testing
+- System architecture
+
+This allows either developer to maintain and upgrade the platform independently.
+
+---
+
+## 16. Documentation Structure
+
+Detailed information is maintained separately:
 
 ```text
-UART → SPI
-PWM → DShot
-Basic firmware → RTOS
-Basic sensing → Advanced sensing
-GPS → Improved positioning
+docs/
+├── architecture/
+│   └── system-architecture.md
+│
+├── hardware/
+│   └── hardware-overview.md
+│
+├── software/
+│   └── software-architecture.md
+│
+├── communication/
+│   └── communication-architecture.md
+│
+├── safety/
+│   └── safety-architecture.md
+│
+├── testing/
+│   └── test-strategy.md
+│
+├── decisions/
+│   └── engineering-decisions.md
+│
+└── versions/
+    └── roadmap.md
 ```
 
-The higher-level architecture should remain stable wherever possible.
+Each document should contain only the level of detail appropriate to its purpose.
 
 ---
 
-# 33. V1 Boundary
+## 17. V1 Boundary
 
-The following are V1 priorities:
+### V1 must achieve
 
+- Reliable manual control
 - Stable flight
-- Manual control
+- Stable hover
 - Custom controller
-- Basic hovering
+- Reliable communication
 - Sensor calibration
-- Communication reliability
-- Safety systems
-- OLED diagnostics
-- Basic autonomous behaviour
-- Modular firmware
-- Documentation
-- Testing and verification
+- Basic failsafe
+- ARM / DISARM
+- Emergency control
+- Basic diagnostics
+- Modular architecture
 
-The following are intentionally deferred to later versions:
+### Later versions may add
 
-- Advanced autonomous navigation
-- Computer vision
-- Thermal sensing
+- Improved communication
+- DShot
+- SPI
+- Advanced autonomous flight
 - Night vision
-- Advanced battery optimization
-- RTOS
-- Advanced research sensing
-- Complex autonomous missions
-
-These features may be introduced after the V1 platform is proven reliable.
+- Thermal sensing
+- Computer vision
+- Additional sensing payloads
+- Advanced navigation
 
 ---
 
-# 34. Engineering Principles
+## 18. Architecture Principles
 
-Gandaberunda follows these principles.
+Gandaberunda follows these principles:
 
-## Understand Before Implementing
+### Keep it simple
 
-Every major subsystem should be understood before integration.
+Do not introduce complexity without a clear benefit.
 
-## Test Before Flight
+### Safety first
 
-Hardware and software should be tested progressively before flight testing.
+Safety decisions take priority over normal commands.
 
-## Fail Safely
+### Test progressively
 
-The system should have predictable behaviour when something goes wrong.
+Do not integrate everything at once.
 
-## Keep V1 Simple
+### Understand before implementing
 
-Complexity should only be introduced when it provides clear engineering value.
+Both developers should understand each subsystem before relying on it.
 
-## Design for Upgrades
+### Modular by design
 
-V1 should not unnecessarily block future development.
+Hardware and software should be replaceable where practical.
 
-## Both Developers Understand the System
+### Build V1 first
 
-Knowledge should not become permanently isolated between team members.
+Advanced features come after reliable basic flight.
 
-Both developers should understand the complete system, even when one developer is primarily responsible for a particular implementation task.
+### Design for upgrades
 
-## Document Decisions
-
-Important engineering decisions should be recorded together with their reasoning and trade-offs.
+V1 should provide a foundation for future versions.
 
 ---
 
-# 35. Related Documentation
+## 19. Current Architecture
 
-Detailed information will be maintained in:
+**Status:** V1 Architecture Defined
 
-- [`Hardware Overview`](../hardware/hardware-overview.md)
-- [`Software Architecture`](../software/software-architecture.md)
-- [`Communication Architecture`](../communication/communication-architecture.md)
-- [`Safety Architecture`](../safety/safety-architecture.md)
-- [`Testing Strategy`](../testing/test-strategy.md)
-- [`Engineering Decisions`](../decisions/engineering-decisions.md)
-- [`Version Roadmap`](../versions/roadmap.md)
+Current communication architecture:
+
+```text
+ESP32
+  │
+  │ ESP-NOW
+  ▼
+ESP32
+  │
+  │ UART
+  ▼
+STM32
+```
+
+Current flight-control architecture:
+
+```text
+Sensors
+   ↓
+STM32
+   ↓
+PID
+   ↓
+Motor Mixer
+   ↓
+PWM
+   ↓
+ESCs
+   ↓
+Motors
+```
+
+Future interfaces such as SPI and DShot will be evaluated experimentally rather than assumed to be better.
 
 ---
 
-# 36. Architecture Status
+## 20. Final Principle
 
-**Current Status:** V1 Architecture — Defined
+> **Build the simplest reliable system first. Understand it completely. Test it. Then upgrade it.**
 
-This document represents the current high-level design.
-
-Hardware specifications, exact interfaces, timing values, control parameters, and implementation details may change during testing.
-
-Any significant architectural change should be recorded in:
-
-`docs/decisions/engineering-decisions.md`
-
-The architecture should be reviewed whenever a major subsystem is changed.
-
----
-
-> **Build the simplest reliable system first. Understand it completely. Then upgrade it.**
+This is the foundation of Project Gandaberunda.
